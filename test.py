@@ -25,17 +25,20 @@ def predict_captions(model, dataloader, text_field):
             with torch.no_grad():
                 out, _ = model.beam_search(images, 20, text_field.vocab.stoi['<eos>'], 5, out_size=1)
             caps_gen = text_field.decode(out, join_words=False)
+
             for i, (gts_i, gen_i) in enumerate(zip(caps_gt, caps_gen)):
                 gen_i = ' '.join([k for k, g in itertools.groupby(gen_i)])
                 gen['%d_%d' % (it, i)] = [gen_i.strip(), ]
                 gts['%d_%d' % (it, i)] = gts_i
             pbar.update()
 
-    gts = evaluation.PTBTokenizer.tokenize(gts)
-    gen = evaluation.PTBTokenizer.tokenize(gen)
-    scores, _ = evaluation.compute_scores(gts, gen)
+    return gen, gts
 
-    return scores
+    #return gen, gts
+    #gts = evaluation.PTBTokenizer.tokenize(gts)
+    #gen = evaluation.PTBTokenizer.tokenize(gen)
+    #scores, _ = evaluation.compute_scores(gts, gen)
+    #return scores
 
 
 if __name__ == '__main__':
@@ -60,6 +63,10 @@ if __name__ == '__main__':
     # Create the dataset
     dataset = COCO(image_field, text_field, 'coco/images/', args.annotation_folder, args.annotation_folder)
     _, _, test_dataset = dataset.splits
+
+    dev_ids = np.load(args.annotation_folder + '/coco_dev_ids.npy')
+    test_ids = np.load(args.annotation_folder + '/coco_test_ids.npy')
+
     text_field.vocab = pickle.load(open('vocab.pkl', 'rb'))
 
     # Model and dataloaders
@@ -74,5 +81,9 @@ if __name__ == '__main__':
     dict_dataset_test = test_dataset.image_dictionary({'image': image_field, 'text': RawField()})
     dict_dataloader_test = DataLoader(dict_dataset_test, batch_size=args.batch_size, num_workers=args.workers)
 
-    scores = predict_captions(model, dict_dataloader_test, text_field)
-    print(scores)
+    preds, refs = predict_captions(model, dict_dataloader_test, text_field)
+
+    with open('preds.json', 'w') as f:
+        f.write(preds)
+    with open('refs.json', 'w') as f:
+        f.write(refs)
