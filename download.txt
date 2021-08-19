@@ -12,3 +12,7 @@ but replace YYY with an OAUTH token for drive api v3 from :
 
 https://developers.google.com/oauthplayground/
 readonly
+
+same with:
+
+curl -H "Authorization: Bearer YYYYY" https://www.googleapis.com/drive/v3/files/1i8mqKFKhqvBr8kEp3DbIh9-9UNAfKGmE?alt=media -o annotations.zip
