@@ -1,0 +1,14 @@
+The answer from shane here is great:
+
+https://www.quora.com/How-do-I-download-a-very-large-file-from-Google-Drive
+
+The mscoco features are here: https://drive.google.com/file/d/1MV6dSnqViQfyvgyHrmAT_lLpFbkzp3mx/view
+
+to download, do this:
+
+curl -H "Authorization: Bearer YYYYY" https://www.googleapis.com/drive/v3/files/1MV6dSnqViQfyvgyHrmAT_lLpFbkzp3mx?alt=media -o coco_detections.hdf5
+
+but replace YYY with an OAUTH token for drive api v3 from :
+
+https://developers.google.com/oauthplayground/
+readonly
