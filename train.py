@@ -299,6 +299,24 @@ if __name__ == '__main__':
             print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['val_loss'], data['best_cider']))
 
+
+        torch.save({
+            'torch_rng_state': torch.get_rng_state(),
+            'cuda_rng_state': torch.cuda.get_rng_state(),
+            'numpy_rng_state': np.random.get_state(),
+            'random_rng_state': random.getstate(),
+            'epoch': e,
+            'val_loss': val_loss,
+            'val_cider': val_cider,
+            'state_dict': model.state_dict(),
+            'optimizer': optim.state_dict(),
+            'scheduler': scheduler.state_dict(),
+            'patience': patience,
+            'best_cider': best_cider,
+            'use_rl': use_rl,
+        }, 'saved_models/epoch_{}.pth'.format(e))
+
+            
         torch.save({
             'torch_rng_state': torch.get_rng_state(),
             'cuda_rng_state': torch.cuda.get_rng_state(),
