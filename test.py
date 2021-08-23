@@ -49,6 +49,7 @@ if __name__ == '__main__':
     parser.add_argument('--workers', type=int, default=0)
     parser.add_argument('--features_path', type=str)
     parser.add_argument('--annotation_folder', type=str)
+    
     args = parser.parse_args()
 
     print('Meshed-Memory Transformer Evaluation')
@@ -63,9 +64,6 @@ if __name__ == '__main__':
     # Create the dataset
     dataset = COCO(image_field, text_field, 'coco/images/', args.annotation_folder, args.annotation_folder)
     _, _, test_dataset = dataset.splits
-
-    dev_ids = np.load(args.annotation_folder + '/coco_dev_ids.npy')
-    test_ids = np.load(args.annotation_folder + '/coco_test_ids.npy')
 
     text_field.vocab = pickle.load(open('vocab.pkl', 'rb'))
 

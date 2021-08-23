@@ -16,3 +16,8 @@ readonly
 same with:
 
 curl -H "Authorization: Bearer YYYYY" https://www.googleapis.com/drive/v3/files/1i8mqKFKhqvBr8kEp3DbIh9-9UNAfKGmE?alt=media -o annotations.zip
+
+
+same with:
+
+curl -H "Authorization: Bearer XXXX" https://www.googleapis.com/drive/v3/files/1kdOlOAfEeovy8kQbdbLTJNaOhRvTcP6q?alt=media -o flickr30k_detections.hdf5
