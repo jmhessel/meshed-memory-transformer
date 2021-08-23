@@ -1,3 +1,6 @@
+'''
+Predicts without GT needed.
+'''
 import random
 from data import ImageDetectionsField, TextField, RawField
 from data import COCO, DataLoader
@@ -8,6 +11,8 @@ from tqdm import tqdm
 import argparse
 import pickle
 import numpy as np
+import h5py
+import pprint
 
 random.seed(1234)
 torch.manual_seed(1234)
@@ -34,12 +39,6 @@ def predict_captions(model, dataloader, text_field):
 
     return gen, gts
 
-    #return gen, gts
-    #gts = evaluation.PTBTokenizer.tokenize(gts)
-    #gen = evaluation.PTBTokenizer.tokenize(gen)
-    #scores, _ = evaluation.compute_scores(gts, gen)
-    #return scores
-
 
 if __name__ == '__main__':
     device = torch.device('cuda')
@@ -48,24 +47,28 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=10)
     parser.add_argument('--workers', type=int, default=0)
     parser.add_argument('--features_path', type=str)
-    parser.add_argument('--model_path', type=str)
+    parser.add_argument('--model_ckpt', type=str)
+    
     args = parser.parse_args()
 
-    print('Meshed-Memory Transformer Evaluation')
+    print('Meshed-Memory Transformer Predictor')
 
     # Pipeline for image regions
     image_field = ImageDetectionsField(detections_path=args.features_path, max_detections=50, load_in_tmp=False)
+    f = h5py.File(args.features_path, 'r')
+    def clean_key(k):
+        for clean in ['_features', '_cls_prob', '_boxes']:
+            if k[-len(clean):] == clean:
+                return k[:-len(clean)]
+        return k
+    # '91852718_features', '918545497_boxes', '918545497_cls_prob'
+    all_image_ids = list(set([clean_key(k) for k in f.keys()]))
+
+    examples = [Example.fromdict({'image': i, 'text': 'placeholder for {}'.format(i)}) for i in all_image_ids]
 
     # Pipeline for text
     text_field = TextField(init_token='<bos>', eos_token='<eos>', lower=True, tokenize='spacy',
                            remove_punctuation=True, nopoints=False)
-
-    # Create the dataset
-    dataset = COCO(image_field, text_field, 'coco/images/', args.annotation_folder, args.annotation_folder)
-    _, _, test_dataset = dataset.splits
-
-    dev_ids = np.load(args.annotation_folder + '/coco_dev_ids.npy')
-    test_ids = np.load(args.annotation_folder + '/coco_test_ids.npy')
 
     text_field.vocab = pickle.load(open('vocab.pkl', 'rb'))
 
@@ -75,11 +78,10 @@ if __name__ == '__main__':
     decoder = MeshedDecoder(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
     model = Transformer(text_field.vocab.stoi['<bos>'], encoder, decoder).to(device)
 
-    data = torch.load('meshed_memory_transformer.pth')
+    data = torch.load(args.model_ckpt)
     model.load_state_dict(data['state_dict'])
-
-    dict_dataset_test = test_dataset.image_dictionary({'image': image_field, 'text': RawField()})
-    dict_dataloader_test = DataLoader(dict_dataset_test, batch_size=args.batch_size, num_workers=args.workers)
+    dict_dataset = DictionaryDataset(examples, {'image': image_field, 'text': RawField()})
+    dict_dataloader = DataLoader(dict_dataset, batch_size=args.batch_size, num_workers=args.workers)
 
     preds, refs = predict_captions(model, dict_dataloader_test, text_field)
 
