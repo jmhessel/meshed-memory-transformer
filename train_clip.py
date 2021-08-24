@@ -17,15 +17,26 @@ import multiprocessing
 from shutil import copyfile
 import pprint
 import subprocess
+import json
+import torch.nn.functional as F
+import sklearn.preprocessing
+import clip
 
-if not os.path.exists('CLIP'):
-    subprocess.call('git clone git@github.com:openai/CLIP.git', shell=True)
+# if not os.path.exists('CLIP'):
+#     subprocess.call('git clone git@github.com:openai/CLIP.git', shell=True)
 
-from CLIP import clip
+# from CLIP import clip
 
-_CLIP_MODEL, _ =  clip.load('ViT-B/32', device='cpu', jit=True)
+_CLIP_DEVICE = 'cuda'
+_CLIP_MODEL, _ =  clip.load('ViT-B/32', device=_CLIP_DEVICE, jit=False)
 _CLIP_MODEL.eval()
-
+_CLIP_IM_FEATS = np.load('all_mscoco_images_for_clip_extract/clip_features/trainval2017_image_features~ViT-B32.npy')
+_CLIP_IM_FEATS = sklearn.preprocessing.normalize(_CLIP_IM_FEATS)
+with open('all_mscoco_images_for_clip_extract/clip_features/trainval2017_image_features~ViT-B32~im2row.json') as f:
+    _CLIP_IM2ROW = json.load(f)
+    _CLIP_IM2ROW = {int(k): v for k, v in _CLIP_IM2ROW.items()}
+print('loaded clip im features with {}-shape (id map len {})'.format(_CLIP_IM_FEATS.shape, len(_CLIP_IM2ROW)))
+print(list(_CLIP_IM2ROW.keys())[:5])
 random.seed(1234)
 torch.manual_seed(1234)
 np.random.seed(1234)
@@ -83,6 +94,7 @@ def train_xe(model, dataloader, optim, text_field):
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, (detections, captions) in enumerate(dataloader):
+            detections, ids = detections
             detections, captions = detections.to(device), captions.to(device)
             out = model(detections, captions)
             optim.zero_grad()
@@ -103,6 +115,20 @@ def train_xe(model, dataloader, optim, text_field):
     return loss
 
 
+def compute_clipscore(preds, refs, ids, use_refclipscore=False):
+    global _CLIP_MODEL, _CLIP_IM_FEATS, _CLIP_IM2ROW, _CLIP_DEVICE
+    if use_refclipscore:
+        raise NotImplementedError('RefClipScore not yet implemented, easy tho')
+
+    im_feats = _CLIP_IM_FEATS[np.array([_CLIP_IM2ROW[im] for im in ids])]
+    with torch.no_grad():
+        toks = clip.tokenize(preds)
+        toks = toks.to(_CLIP_DEVICE)
+        preds_feats = F.normalize(_CLIP_MODEL.encode_text(toks)).cpu().numpy()
+
+    return np.sum(im_feats * preds_feats, axis=1)
+
+
 def train_scst(model, dataloader, optim, cider, text_field):
     # Training with self-critical
     tokenizer_pool = multiprocessing.Pool()
@@ -115,7 +141,6 @@ def train_scst(model, dataloader, optim, cider, text_field):
 
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, (detections, caps_gt) in enumerate(dataloader):
-
             detections, ids = detections
             detections = detections.to(device)
             outs, log_probs = model.beam_search(detections, seq_len, text_field.vocab.stoi['<eos>'],
@@ -123,12 +148,10 @@ def train_scst(model, dataloader, optim, cider, text_field):
             optim.zero_grad()
             # Rewards
             caps_gen = text_field.decode(outs.view(-1, seq_len))
-            print(caps_gen)
             caps_gt = list(itertools.chain(*([c, ] * beam_size for c in caps_gt)))
-            print(caps_gt)
-            quit()
-            caps_gen, caps_gt = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt])
-            reward = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
+            ids = ids.cpu().numpy().tolist()
+            ids = list(itertools.chain(*([c, ] * beam_size for c in ids)))
+            reward = compute_clipscore(caps_gen, caps_gt, ids)
             reward = torch.from_numpy(reward).to(device).view(detections.shape[0], beam_size)
             reward_baseline = torch.mean(reward, -1, keepdim=True)
             loss = -torch.mean(log_probs, -1) * (reward - reward_baseline)
@@ -227,7 +250,10 @@ if __name__ == '__main__':
         if os.path.exists(fname):
             data = torch.load(fname)
             torch.set_rng_state(data['torch_rng_state'])
-            torch.cuda.set_rng_state(data['cuda_rng_state'])
+            try:
+                torch.cuda.set_rng_state(data['cuda_rng_state'])
+            except:
+                print('CHECKPOINT FROM DIFF TORCH VERS, CANT SET RNG STATE')
             np.random.set_state(data['numpy_rng_state'])
             random.setstate(data['random_rng_state'])
             model.load_state_dict(data['state_dict'], strict=False)
@@ -236,7 +262,8 @@ if __name__ == '__main__':
             start_epoch = data['epoch'] + 1
             best_cider = data['best_cider']
             patience = data['patience']
-            use_rl = data['use_rl']
+            #use_rl = data['use_rl']
+            use_rl=True
             print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['val_loss'], data['best_cider']))
 
@@ -329,7 +356,7 @@ if __name__ == '__main__':
             'patience': patience,
             'best_cider': best_cider,
             'use_rl': use_rl,
-        }, 'saved_models/epoch_{}.pth'.format(e))
+        }, 'saved_models/epoch_{}_{}.pth'.format(e, args.exp_name))
 
             
         torch.save({
