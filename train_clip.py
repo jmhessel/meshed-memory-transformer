@@ -157,7 +157,7 @@ def compute_clipscore(preds, refs, ids, use_refclipscore=False, w=2.5):
     cand_idx2refs = {k: np.vstack(v) for k, v in cand_idx2refs.items()}
     per = []
     method = 'max'
-    for c_idx, cand in tqdm(enumerate(preds_feats)):
+    for c_idx, cand in enumerate(preds_feats):
         cur_refs = cand_idx2refs[c_idx]
         all_sims = cand.dot(cur_refs.transpose())
         if method == 'max':
