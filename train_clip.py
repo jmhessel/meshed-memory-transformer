@@ -55,7 +55,6 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
 
                 pbar.set_postfix(loss=running_loss / (it + 1))
                 pbar.update()
-                break
 
     val_loss = running_loss / len(dataloader)
     return val_loss
@@ -84,7 +83,6 @@ def evaluate_metrics(model, dataloader, text_field):
                 all_gts.append(gts_i)
                 all_ids.append(id_i)
             pbar.update()
-            break
 
     gts = evaluation.PTBTokenizer.tokenize(gts)
     gen = evaluation.PTBTokenizer.tokenize(gen)
@@ -117,7 +115,6 @@ def train_xe(model, dataloader, optim, text_field):
             pbar.set_postfix(loss=running_loss / (it + 1))
             pbar.update()
             scheduler.step()
-            break
 
     loss = running_loss / len(dataloader)
     return loss
