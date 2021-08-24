@@ -90,8 +90,8 @@ def evaluate_metrics(model, dataloader, text_field):
     gen = evaluation.PTBTokenizer.tokenize(gen)
     scores, _ = evaluation.compute_scores(gts, gen)
     clipscore, refclipscore = compute_clipscore(all_gens, all_gts, all_ids, use_refclipscore=True)
-    scores['CLIPScore'] = clipscore
-    scores['RefCLIPScore'] = refclipscore
+    scores['CLIPScore'] = np.mean(clipscore)
+    scores['RefCLIPScore'] = np.mean(refclipscore)
     return scores
 
 
@@ -153,14 +153,14 @@ def compute_clipscore(preds, refs, ids, use_refclipscore=False, w=2.5):
         flat_refs_feats = F.normalize(_CLIP_MODEL.encode_text(toks)).cpu().numpy()
 
     cand_idx2refs = collections.defaultdict(list)
-    for ref_feats, cand_idx in zip(reference_feats, flattened_refs_idxs):
+    for ref_feats, cand_idx in zip(flat_refs_feats, flat_refs_idxs):
         cand_idx2refs[cand_idx].append(ref_feats)
 
     assert len(cand_idx2refs) == len(preds_feats)
     cand_idx2refs = {k: np.vstack(v) for k, v in cand_idx2refs.items()}
     per = []
     method = 'max'
-    for c_idx, cand in tqdm.tqdm(enumerate(candidate_feats)):
+    for c_idx, cand in tqdm(enumerate(preds_feats)):
         cur_refs = cand_idx2refs[c_idx]
         all_sims = cand.dot(cur_refs.transpose())
         if method == 'max':
