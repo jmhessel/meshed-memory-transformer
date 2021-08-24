@@ -1,5 +1,5 @@
 import random
-from data import ImageDetectionsField, TextField, RawField
+from data import ImageDetectionsField, ImageDetectionsFieldWithID, TextField, RawField
 from data import COCO, DataLoader
 import evaluation
 from evaluation import PTBTokenizer, Cider
@@ -15,6 +15,16 @@ import numpy as np
 import itertools
 import multiprocessing
 from shutil import copyfile
+import pprint
+import subprocess
+
+if not os.path.exists('CLIP'):
+    subprocess.call('git clone git@github.com:openai/CLIP.git', shell=True)
+
+from CLIP import clip
+
+_CLIP_MODEL, _ =  clip.load('ViT-B/32', device='cpu', jit=True)
+_CLIP_MODEL.eval()
 
 random.seed(1234)
 torch.manual_seed(1234)
@@ -105,14 +115,18 @@ def train_scst(model, dataloader, optim, cider, text_field):
 
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, (detections, caps_gt) in enumerate(dataloader):
+
+            detections, ids = detections
             detections = detections.to(device)
             outs, log_probs = model.beam_search(detections, seq_len, text_field.vocab.stoi['<eos>'],
                                                 beam_size, out_size=beam_size)
             optim.zero_grad()
-
             # Rewards
             caps_gen = text_field.decode(outs.view(-1, seq_len))
+            print(caps_gen)
             caps_gt = list(itertools.chain(*([c, ] * beam_size for c in caps_gt)))
+            print(caps_gt)
+            quit()
             caps_gen, caps_gt = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt])
             reward = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
             reward = torch.from_numpy(reward).to(device).view(detections.shape[0], beam_size)
@@ -158,7 +172,7 @@ if __name__ == '__main__':
     writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.exp_name))
 
     # Pipeline for image regions
-    image_field = ImageDetectionsField(detections_path=args.features_path, max_detections=50, load_in_tmp=False)
+    image_field = ImageDetectionsFieldWithID(detections_path=args.features_path, max_detections=50, load_in_tmp=False)
 
     # Pipeline for text
     text_field = TextField(init_token='<bos>', eos_token='<eos>', lower=True, tokenize='spacy',
@@ -198,7 +212,8 @@ if __name__ == '__main__':
     optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
     scheduler = LambdaLR(optim, lambda_lr)
     loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
-    use_rl = False
+    # use_rl = False
+    use_rl = True
     best_cider = .0
     patience = 0
     start_epoch = 0
@@ -227,10 +242,10 @@ if __name__ == '__main__':
 
     print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
-        dataloader_train = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers,
+        dataloader_train = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.workers,
                                       drop_last=True)
-        dataloader_val = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
-        dict_dataloader_train = DataLoader(dict_dataset_train, batch_size=args.batch_size // 5, shuffle=True,
+        dataloader_val = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=args.workers)
+        dict_dataloader_train = DataLoader(dict_dataset_train, batch_size=args.batch_size // 5,
                                            num_workers=args.workers)
         dict_dataloader_val = DataLoader(dict_dataset_val, batch_size=args.batch_size // 5)
         dict_dataloader_test = DataLoader(dict_dataset_test, batch_size=args.batch_size // 5)
