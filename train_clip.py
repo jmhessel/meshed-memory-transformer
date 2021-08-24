@@ -21,11 +21,7 @@ import json
 import torch.nn.functional as F
 import sklearn.preprocessing
 import clip
-
-# if not os.path.exists('CLIP'):
-#     subprocess.call('git clone git@github.com:openai/CLIP.git', shell=True)
-
-# from CLIP import clip
+import collections
 
 _CLIP_DEVICE = 'cuda'
 _CLIP_MODEL, _ =  clip.load('ViT-B/32', device=_CLIP_DEVICE, jit=False)
@@ -48,7 +44,7 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
     running_loss = .0
     with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader)) as pbar:
         with torch.no_grad():
-            for it, (detections, captions) in enumerate(dataloader):
+            for it, (detections, ids, captions) in enumerate(dataloader):
                 detections, captions = detections.to(device), captions.to(device)
                 out = model(detections, captions)
                 captions = captions[:, 1:].contiguous()
@@ -59,6 +55,7 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
 
                 pbar.set_postfix(loss=running_loss / (it + 1))
                 pbar.update()
+                break
 
     val_loss = running_loss / len(dataloader)
     return val_loss
@@ -69,21 +66,32 @@ def evaluate_metrics(model, dataloader, text_field):
     model.eval()
     gen = {}
     gts = {}
+
+    all_gens, all_gts, all_ids = [], [], []
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
-        for it, (images, caps_gt) in enumerate(iter(dataloader)):
+        for it, (detections, caps_gt) in enumerate(dataloader):
+            images, ids = detections
             images = images.to(device)
+            ids = ids.cpu().numpy().tolist()
             with torch.no_grad():
                 out, _ = model.beam_search(images, 20, text_field.vocab.stoi['<eos>'], 5, out_size=1)
             caps_gen = text_field.decode(out, join_words=False)
-            for i, (gts_i, gen_i) in enumerate(zip(caps_gt, caps_gen)):
+            for i, (gts_i, gen_i, id_i) in enumerate(zip(caps_gt, caps_gen, ids)):
                 gen_i = ' '.join([k for k, g in itertools.groupby(gen_i)])
                 gen['%d_%d' % (it, i)] = [gen_i, ]
                 gts['%d_%d' % (it, i)] = gts_i
+                all_gens.append(gen_i)
+                all_gts.append(gts_i)
+                all_ids.append(id_i)
             pbar.update()
+            break
 
     gts = evaluation.PTBTokenizer.tokenize(gts)
     gen = evaluation.PTBTokenizer.tokenize(gen)
     scores, _ = evaluation.compute_scores(gts, gen)
+    clipscore, refclipscore = compute_clipscore(all_gens, all_gts, all_ids, use_refclipscore=True)
+    scores['CLIPScore'] = clipscore
+    scores['RefCLIPScore'] = refclipscore
     return scores
 
 
@@ -93,7 +101,6 @@ def train_xe(model, dataloader, optim, text_field):
     scheduler.step()
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
-        #for it, (detections, captions) in enumerate(dataloader):
         for it, (detections, ids, captions) in enumerate(dataloader):
             detections, captions = detections.to(device), captions.to(device)
             out = model(detections, captions)
@@ -110,15 +117,26 @@ def train_xe(model, dataloader, optim, text_field):
             pbar.set_postfix(loss=running_loss / (it + 1))
             pbar.update()
             scheduler.step()
+            break
 
     loss = running_loss / len(dataloader)
     return loss
 
 
-def compute_clipscore(preds, refs, ids, use_refclipscore=False):
+def compute_clipscore(preds, refs, ids, use_refclipscore=False, w=2.5):
     global _CLIP_MODEL, _CLIP_IM_FEATS, _CLIP_IM2ROW, _CLIP_DEVICE
-    if use_refclipscore:
-        raise NotImplementedError('RefClipScore not yet implemented, easy tho')
+
+    flat_refs = []
+    flat_refs_idxs = []
+    for idx, c_refs in enumerate(refs):
+        flat_refs.extend(c_refs)
+        flat_refs_idxs.extend([idx for _ in c_refs])
+
+    reflens = list(map(len, refs))
+
+    flat_refs = []
+    for r in refs:
+        flat_refs.extend(r)
 
     im_feats = _CLIP_IM_FEATS[np.array([_CLIP_IM2ROW[im] for im in ids])]
     with torch.no_grad():
@@ -126,10 +144,36 @@ def compute_clipscore(preds, refs, ids, use_refclipscore=False):
         toks = toks.to(_CLIP_DEVICE)
         preds_feats = F.normalize(_CLIP_MODEL.encode_text(toks)).cpu().numpy()
 
-    return np.sum(im_feats * preds_feats, axis=1)
+    clipscore = np.sum(im_feats * preds_feats, axis=1)
+    clipscore = w*np.clip(clipscore, 0, None) # for the harmonic mean, and to prevent any (rare) negatives
+    if not use_refclipscore: return clipscore
+    with torch.no_grad():
+        toks = clip.tokenize(flat_refs)
+        toks = toks.to(_CLIP_DEVICE)
+        flat_refs_feats = F.normalize(_CLIP_MODEL.encode_text(toks)).cpu().numpy()
+
+    cand_idx2refs = collections.defaultdict(list)
+    for ref_feats, cand_idx in zip(reference_feats, flattened_refs_idxs):
+        cand_idx2refs[cand_idx].append(ref_feats)
+
+    assert len(cand_idx2refs) == len(preds_feats)
+    cand_idx2refs = {k: np.vstack(v) for k, v in cand_idx2refs.items()}
+    per = []
+    method = 'max'
+    for c_idx, cand in tqdm.tqdm(enumerate(candidate_feats)):
+        cur_refs = cand_idx2refs[c_idx]
+        all_sims = cand.dot(cur_refs.transpose())
+        if method == 'max':
+            per.append(np.max(all_sims))
+        elif method == 'mean':
+            per.append(np.mean(all_sims))
+
+    refonly_clipscore = np.array(per)
+    refclipscore = 2 * clipscore * refonly_clipscore / (clipscore + refonly_clipscore)
+    return clipscore, refclipscore
 
 
-def train_scst(model, dataloader, optim, cider, text_field):
+def train_scst(model, dataloader, optim, cider, text_field, reward_type):
     # Training with self-critical
     tokenizer_pool = multiprocessing.Pool()
     running_reward = .0
@@ -151,7 +195,14 @@ def train_scst(model, dataloader, optim, cider, text_field):
             caps_gt = list(itertools.chain(*([c, ] * beam_size for c in caps_gt)))
             ids = ids.cpu().numpy().tolist()
             ids = list(itertools.chain(*([c, ] * beam_size for c in ids)))
-            reward = compute_clipscore(caps_gen, caps_gt, ids)
+            if reward_type == 'CLIPScore':
+                reward = compute_clipscore(caps_gen, caps_gt, ids)
+            elif reward_type == 'RefCLIPScore':
+                _, reward = compute_clipscore(caps_gen, caps_gt, ids, use_refclipscore=True)
+            elif reward_type == 'CIDEr':
+                reward = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
+            else:
+                raise NotImplementedError()
             reward = torch.from_numpy(reward).to(device).view(detections.shape[0], beam_size)
             reward_baseline = torch.mean(reward, -1, keepdim=True)
             loss = -torch.mean(log_probs, -1) * (reward - reward_baseline)
@@ -182,6 +233,8 @@ if __name__ == '__main__':
     parser.add_argument('--m', type=int, default=40)
     parser.add_argument('--head', type=int, default=8)
     parser.add_argument('--warmup', type=int, default=10000)
+    parser.add_argument('--use_for_early_stop', type=str, default='CLIPScore', choices=['CLIPScore', 'CIDEr', 'RefCLIPScore'])
+    parser.add_argument('--reward', type=str, default='CLIPScore', choices=['CLIPScore', 'CIDEr', 'RefCLIPScore'])
     parser.add_argument('--resume_last', action='store_true')
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--features_path', type=str)
@@ -220,7 +273,10 @@ if __name__ == '__main__':
 
     dict_dataset_train = train_dataset.image_dictionary({'image': image_field, 'text': RawField()})
     ref_caps_train = list(train_dataset.text)
-    cider_train = Cider(PTBTokenizer.tokenize(ref_caps_train))
+    if args.reward == 'CIDEr':
+        cider_train = Cider(PTBTokenizer.tokenize(ref_caps_train))
+    else:
+        cider_train = None
     dict_dataset_val = val_dataset.image_dictionary({'image': image_field, 'text': RawField()})
     dict_dataset_test = test_dataset.image_dictionary({'image': image_field, 'text': RawField()})
 
@@ -238,6 +294,7 @@ if __name__ == '__main__':
     # use_rl = False
     use_rl = True
     best_cider = .0
+    best_earlystop_score = .0
     patience = 0
     start_epoch = 0
 
@@ -281,7 +338,7 @@ if __name__ == '__main__':
             train_loss = train_xe(model, dataloader_train, optim, text_field)
             writer.add_scalar('data/train_loss', train_loss, e)
         else:
-            train_loss, reward, reward_baseline = train_scst(model, dict_dataloader_train, optim, cider_train, text_field)
+            train_loss, reward, reward_baseline = train_scst(model, dict_dataloader_train, optim, cider_train, text_field, args.reward)
             writer.add_scalar('data/train_loss', train_loss, e)
             writer.add_scalar('data/reward', reward, e)
             writer.add_scalar('data/reward_baseline', reward_baseline, e)
@@ -294,11 +351,14 @@ if __name__ == '__main__':
         scores = evaluate_metrics(model, dict_dataloader_val, text_field)
         print("Validation scores", scores)
         val_cider = scores['CIDEr']
+        val_earlystop = scores[args.use_for_early_stop]
         writer.add_scalar('data/val_cider', val_cider, e)
         writer.add_scalar('data/val_bleu1', scores['BLEU'][0], e)
         writer.add_scalar('data/val_bleu4', scores['BLEU'][3], e)
         writer.add_scalar('data/val_meteor', scores['METEOR'], e)
         writer.add_scalar('data/val_rouge', scores['ROUGE'], e)
+        writer.add_scalar('data/val_clipscore', scores['CLIPScore'], e)
+        writer.add_scalar('data/val_refclipscore', scores['RefCLIPScore'], e)
 
         # Test scores
         scores = evaluate_metrics(model, dict_dataloader_test, text_field)
@@ -308,11 +368,13 @@ if __name__ == '__main__':
         writer.add_scalar('data/test_bleu4', scores['BLEU'][3], e)
         writer.add_scalar('data/test_meteor', scores['METEOR'], e)
         writer.add_scalar('data/test_rouge', scores['ROUGE'], e)
+        writer.add_scalar('data/test_clipscore', scores['CLIPScore'], e)
+        writer.add_scalar('data/test_refclipscore', scores['RefCLIPScore'], e)
 
         # Prepare for next epoch
         best = False
-        if val_cider >= best_cider:
-            best_cider = val_cider
+        if val_earlystop >= best_earlystop_score:
+            best_earlystop_score = val_earlystop
             patience = 0
             best = True
         else:
@@ -350,6 +412,8 @@ if __name__ == '__main__':
             'epoch': e,
             'val_loss': val_loss,
             'val_cider': val_cider,
+            'val_earlystop': val_earlystop,
+            'earlystopping_on': args.use_for_early_stop,
             'state_dict': model.state_dict(),
             'optimizer': optim.state_dict(),
             'scheduler': scheduler.state_dict(),
@@ -358,7 +422,7 @@ if __name__ == '__main__':
             'use_rl': use_rl,
         }, 'saved_models/epoch_{}_{}.pth'.format(e, args.exp_name))
 
-            
+
         torch.save({
             'torch_rng_state': torch.get_rng_state(),
             'cuda_rng_state': torch.cuda.get_rng_state(),
@@ -367,6 +431,8 @@ if __name__ == '__main__':
             'epoch': e,
             'val_loss': val_loss,
             'val_cider': val_cider,
+            'val_earlystop': val_earlystop,
+            'earlystopping_on': args.use_for_early_stop,
             'state_dict': model.state_dict(),
             'optimizer': optim.state_dict(),
             'scheduler': scheduler.state_dict(),
