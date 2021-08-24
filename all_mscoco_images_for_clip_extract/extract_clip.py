@@ -115,7 +115,7 @@ def main():
         print('saving {} array'.format(all_text_features.shape))
         np.save(args.captions_out_base + '.npy', all_text_features)
 
-    if args.images
+    if args.images:
         ordered_ids, ordered_paths = [], []
         for cpath in args.images:
             cid = '.'.join(cpath.split('/')[-1].split('.')[:-1])

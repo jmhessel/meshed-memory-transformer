@@ -122,7 +122,14 @@ class ImageDetectionsField(RawField):
 
         return precomp_data.astype(np.float32)
 
+    
+class ImageDetectionsFieldWithID(ImageDetectionsField):
+    def preprocess(self, x, avoid_precomp=False):
+        image_id = int(x.split('_')[-1].split('.')[0])
+        res = super(ImageDetectionsFieldWithID, self).preprocess(x, avoid_precomp=avoid_precomp)
+        return res, image_id
 
+    
 class TextField(RawField):
     vocab_cls = Vocab
     # Dictionary mapping PyTorch tensor dtypes to the appropriate Python
