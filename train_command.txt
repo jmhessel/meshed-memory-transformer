@@ -1,5 +1,9 @@
 CUDA_VISIBLE_DEVICES=3 python train.py --exp_name m2_transformer --batch_size 50 --m 40 --head 8 --warmup 10000 --features_path coco_detections.hdf5 --annotation_folder annotations/ --workers 8
 
+CUDA_VISIBLE_DEVICES=6 python train_clip.py --batch_size 50 --m 40 --head 8 --warmup 10000 --features_path coco_detections.hdf5 --annotation_folder annotations/ --workers 8 --exp_name CLIPScore_reinforce --logs_folder CLIPScore_reinforce --resume_last --reward CLIPScore --use_for_early_stop CLIPScore
+
+CUDA_VISIBLE_DEVICES=5 python train_clip.py --batch_size 50 --m 40 --head 8 --warmup 10000 --features_path coco_detections.hdf5 --annotation_folder annotations/ --workers 8 --exp_name RefCLIPScore_reinforce --logs_folder RefCLIPScore_reinforce --resume_last --reward RefCLIPScore --use_for_early_stop RefCLIPScore
+
 
 ValueError: DataLoader with IterableDataset: expected unspecified shuffle option, but got shuffle=True
 BufferedShuffleDataset
