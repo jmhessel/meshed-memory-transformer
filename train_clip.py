@@ -288,8 +288,7 @@ if __name__ == '__main__':
     optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
     scheduler = LambdaLR(optim, lambda_lr)
     loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
-    # use_rl = False
-    use_rl = True
+    use_rl = False
     best_cider = .0
     best_earlystop_score = .0
     patience = 0
@@ -317,17 +316,17 @@ if __name__ == '__main__':
             best_cider = data['best_cider']
             patience = data['patience']
             use_rl = data['use_rl']
-            # use_rl=True
+            use_rl=True
             print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['val_loss'], data['best_cider']))
 
     print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
         dataloader_train = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=args.workers,
-                                      drop_last=True)
+                                      drop_last=True, shuffle=True)
         dataloader_val = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=args.workers)
         dict_dataloader_train = DataLoader(dict_dataset_train, batch_size=args.batch_size // 5,
-                                           num_workers=args.workers)
+                                           num_workers=args.workers, shuffle=True)
         dict_dataloader_val = DataLoader(dict_dataset_val, batch_size=args.batch_size // 5)
         dict_dataloader_test = DataLoader(dict_dataset_test, batch_size=args.batch_size // 5)
 
