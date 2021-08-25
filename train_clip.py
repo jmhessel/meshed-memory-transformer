@@ -25,6 +25,7 @@ import torch.nn.functional as F
 import sklearn.preprocessing
 import clip
 import collections
+import copy
 
 _CLIP_DEVICE = 'cuda'
 _CLIP_MODEL, _ =  clip.load('ViT-B/32', device=_CLIP_DEVICE, jit=False)
@@ -221,10 +222,12 @@ def train_scst(model, dataloader, optim, cider, text_field, reward_type):
             elif reward_type == 'RefCLIPScore':
                 _, reward = compute_clipscore(caps_gen, caps_gt, ids, use_refclipscore=True)
             elif reward_type == 'CIDEr':
+                caps_gen, caps_gt = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt])
                 reward = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
             elif reward_type == 'CIDErCLIPScore':
-                reward1 = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
                 reward2 = compute_clipscore(caps_gen, caps_gt, ids)
+                caps_gen, caps_gt = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt])
+                reward1 = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
                 reward = (reward1 + reward2)/2
             else:
                 raise NotImplementedError()
