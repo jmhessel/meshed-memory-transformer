@@ -120,6 +120,24 @@ def train_xe(model, dataloader, optim, text_field):
     return loss
 
 
+# we will batch the mat
+class MatDataset(torch.utils.data.Dataset):
+    def __init__(self, mat):
+        self.mat = mat
+    def __len__(self):
+        return len(self.mat)
+    def __getitem__(self, idx):
+        return self.mat[idx]
+
+def batched_encode_text(toks):
+    global _CLIP_MODEL, _CLIP_DEVICE
+    iterable_mat = torch.utils.data.DataLoader(MatDataset(toks), batch_size=1024, shuffle=False)
+    out = []
+    for batch in iterable_mat:
+        out.append(_CLIP_MODEL.encode_text(batch))
+    return torch.cat(out, dim=0)
+    
+
 def compute_clipscore(preds, refs, ids, use_refclipscore=False, w=2.5):
     global _CLIP_MODEL, _CLIP_IM_FEATS, _CLIP_IM2ROW, _CLIP_DEVICE
 
@@ -139,7 +157,7 @@ def compute_clipscore(preds, refs, ids, use_refclipscore=False, w=2.5):
     with torch.no_grad():
         toks = clip.tokenize(preds)
         toks = toks.to(_CLIP_DEVICE)
-        preds_feats = F.normalize(_CLIP_MODEL.encode_text(toks)).cpu().numpy()
+        preds_feats = F.normalize(batched_encode_text(toks)).cpu().numpy()
 
     clipscore = np.sum(im_feats * preds_feats, axis=1)
     clipscore = w*np.clip(clipscore, 0, None) # for the harmonic mean, and to prevent any (rare) negatives
@@ -147,7 +165,7 @@ def compute_clipscore(preds, refs, ids, use_refclipscore=False, w=2.5):
     with torch.no_grad():
         toks = clip.tokenize(flat_refs)
         toks = toks.to(_CLIP_DEVICE)
-        flat_refs_feats = F.normalize(_CLIP_MODEL.encode_text(toks)).cpu().numpy()
+        flat_refs_feats = F.normalize(batched_encode_text(toks)).cpu().numpy()
 
     cand_idx2refs = collections.defaultdict(list)
     for ref_feats, cand_idx in zip(flat_refs_feats, flat_refs_idxs):
