@@ -1,3 +1,6 @@
+'''
+CUDA_VISIBLE_DEVICES=6 python train_clip.py --batch_size 50 --m 40 --head 8 --warmup 10000 --features_path coco_detections.hdf5 --annotation_folder annotations/ --workers 8 --exp_name CLIPScore_reinforce --resume_last --reward CLIPScore --use_for_early_stop CLIPScore --force_rl_start
+'''
 import random
 from data import ImageDetectionsField, ImageDetectionsFieldWithID, TextField, RawField
 from data import COCO, DataLoader
@@ -83,13 +86,14 @@ def evaluate_metrics(model, dataloader, text_field):
                 all_gts.append(gts_i)
                 all_ids.append(id_i)
             pbar.update()
-
+            
     gts = evaluation.PTBTokenizer.tokenize(gts)
     gen = evaluation.PTBTokenizer.tokenize(gen)
     scores, _ = evaluation.compute_scores(gts, gen)
     clipscore, refclipscore = compute_clipscore(all_gens, all_gts, all_ids, use_refclipscore=True)
     scores['CLIPScore'] = np.mean(clipscore)
     scores['RefCLIPScore'] = np.mean(refclipscore)
+    scores['CIDErCLIPScore'] = (scores['CIDEr'] + scores['CLIPScore']) / 2
     return scores
 
 
@@ -115,7 +119,7 @@ def train_xe(model, dataloader, optim, text_field):
             pbar.set_postfix(loss=running_loss / (it + 1))
             pbar.update()
             scheduler.step()
-
+            
     loss = running_loss / len(dataloader)
     return loss
 
@@ -129,13 +133,15 @@ class MatDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         return self.mat[idx]
 
+
 def batched_encode_text(toks):
     global _CLIP_MODEL, _CLIP_DEVICE
     iterable_mat = torch.utils.data.DataLoader(MatDataset(toks), batch_size=1024, shuffle=False)
     out = []
-    for batch in iterable_mat:
-        out.append(_CLIP_MODEL.encode_text(batch))
-    return torch.cat(out, dim=0)
+    with torch.no_grad():
+        for batch in iterable_mat:
+            out.append(_CLIP_MODEL.encode_text(batch))
+        return torch.cat(out, dim=0)
     
 
 def compute_clipscore(preds, refs, ids, use_refclipscore=False, w=2.5):
@@ -155,7 +161,7 @@ def compute_clipscore(preds, refs, ids, use_refclipscore=False, w=2.5):
 
     im_feats = _CLIP_IM_FEATS[np.array([_CLIP_IM2ROW[im] for im in ids])]
     with torch.no_grad():
-        toks = clip.tokenize(preds)
+        toks = clip.tokenize(['A photo depicts ' + p for p in preds])
         toks = toks.to(_CLIP_DEVICE)
         preds_feats = F.normalize(batched_encode_text(toks)).cpu().numpy()
 
@@ -163,7 +169,7 @@ def compute_clipscore(preds, refs, ids, use_refclipscore=False, w=2.5):
     clipscore = w*np.clip(clipscore, 0, None) # for the harmonic mean, and to prevent any (rare) negatives
     if not use_refclipscore: return clipscore
     with torch.no_grad():
-        toks = clip.tokenize(flat_refs)
+        toks = clip.tokenize(['A photo depicts ' + p for p in flat_refs])
         toks = toks.to(_CLIP_DEVICE)
         flat_refs_feats = F.normalize(batched_encode_text(toks)).cpu().numpy()
 
@@ -216,6 +222,10 @@ def train_scst(model, dataloader, optim, cider, text_field, reward_type):
                 _, reward = compute_clipscore(caps_gen, caps_gt, ids, use_refclipscore=True)
             elif reward_type == 'CIDEr':
                 reward = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
+            elif reward_type == 'CIDErCLIPScore':
+                reward1 = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
+                reward2 = compute_clipscore(caps_gen, caps_gt, ids)
+                reward = (reward1 + reward2)/2
             else:
                 raise NotImplementedError()
             reward = torch.from_numpy(reward).to(device).view(detections.shape[0], beam_size)
@@ -248,13 +258,15 @@ if __name__ == '__main__':
     parser.add_argument('--m', type=int, default=40)
     parser.add_argument('--head', type=int, default=8)
     parser.add_argument('--warmup', type=int, default=10000)
-    parser.add_argument('--use_for_early_stop', type=str, default='CLIPScore', choices=['CLIPScore', 'CIDEr', 'RefCLIPScore'])
-    parser.add_argument('--reward', type=str, default='CLIPScore', choices=['CLIPScore', 'CIDEr', 'RefCLIPScore'])
+    parser.add_argument('--use_for_early_stop', type=str, default='CLIPScore', choices=['CLIPScore', 'CIDEr', 'RefCLIPScore', 'CIDErCLIPScore'])
+    parser.add_argument('--reward', type=str, default='CLIPScore', choices=['CLIPScore', 'CIDEr', 'RefCLIPScore', 'CIDErCLIPScore'])
     parser.add_argument('--resume_last', action='store_true')
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--features_path', type=str)
     parser.add_argument('--annotation_folder', type=str)
     parser.add_argument('--logs_folder', type=str, default='tensorboard_logs')
+    parser.add_argument('--force_rl_start', action='store_true')
+    
     args = parser.parse_args()
     print(args)
 
@@ -288,7 +300,7 @@ if __name__ == '__main__':
 
     dict_dataset_train = train_dataset.image_dictionary({'image': image_field, 'text': RawField()})
     ref_caps_train = list(train_dataset.text)
-    if args.reward == 'CIDEr':
+    if args.reward in ['CIDEr', 'CIDErCLIPScore']:
         cider_train = Cider(PTBTokenizer.tokenize(ref_caps_train))
     else:
         cider_train = None
@@ -334,7 +346,8 @@ if __name__ == '__main__':
             best_cider = data['best_cider']
             patience = data['patience']
             use_rl = data['use_rl']
-            use_rl=True
+            if args.force_rl_start:
+                use_rl = True
             print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['val_loss'], data['best_cider']))
 
